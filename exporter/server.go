@@ -74,6 +74,7 @@ func (se *ShellyExporter) tick() {
 		for _, device := range se.devices.getAll() {
 			powerState, err := se.getPowerState(device)
 			powerState.Instance = device.Instance
+			powerState.Name = device.Name
 			se.observationMutex.Lock()
 			se.observations[device.Instance] = &powerState
 			se.observationMutex.Unlock()
@@ -95,11 +96,91 @@ func (se *ShellyExporter) GetObservations(w http.ResponseWriter, r *http.Request
 	defer se.observationMutex.RUnlock()
 
 	for instance, obs := range se.observations {
-		fmt.Fprintf(w, "shelly_apower_watts{instance=\"%s\"} %f\n", instance, obs.APower)
-		fmt.Fprintf(w, "shelly_voltage_volts{instance=\"%s\"} %f\n", instance, obs.Voltage)
-		fmt.Fprintf(w, "shelly_current_amps{instance=\"%s\"} %f\n", instance, obs.Current)
-		fmt.Fprintf(w, "shelly_frequency_hz{instance=\"%s\"} %f\n", instance, obs.Freq)
+		fmt.Fprintf(w, "shelly_apower_watts{instance=\"%s\",node=\"%s\"} %f\n", instance, obs.Name, obs.APower)
+		fmt.Fprintf(w, "shelly_voltage_volts{instance=\"%s\",node=\"%s\"} %f\n", instance, obs.Name, obs.Voltage)
+		fmt.Fprintf(w, "shelly_current_amps{instance=\"%s\",node=\"%s\"} %f\n", instance, obs.Name, obs.Current)
+		fmt.Fprintf(w, "shelly_frequency_hz{instance=\"%s\",node=\"%s\"} %f\n", instance, obs.Name, obs.Freq)
 	}
+}
+
+func (se *ShellyExporter) validateDevice(device Device) error {
+	if device.IP == "" {
+		return fmt.Errorf("device %s has no IP", device.Instance)
+	}
+	return nil
+}
+
+func (se *ShellyExporter) DeviceList(w http.ResponseWriter, r *http.Request) {
+	se.observationMutex.RLock()
+	defer se.observationMutex.RUnlock()
+
+	jsonMsg, err := json.MarshalIndent(se.devices.getAll(), "", "  ")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error marshalling devices: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(jsonMsg)
+}
+
+func (se *ShellyExporter) AddDeviceHandler(w http.ResponseWriter, r *http.Request) {
+	var device Device
+	err := json.NewDecoder(r.Body).Decode(&device)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error decoding device: %v", err), http.StatusBadRequest)
+		return
+	}
+	if err := se.validateDevice(device); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid device: %v", err), http.StatusBadRequest)
+		return
+	}
+	se.AddDevice(device)
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (se *ShellyExporter) UpdateDevice(w http.ResponseWriter, r *http.Request) {
+	var device Device
+	err := json.NewDecoder(r.Body).Decode(&device)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error decoding device: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if err := se.validateDevice(device); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid device: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	se.observationMutex.Lock()
+	defer se.observationMutex.Unlock()
+
+	//find device
+	for i, d := range se.devices.Devices {
+		if d.Instance == device.Instance {
+			//update
+			se.devices.Devices[i] = device
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}
+
+	http.Error(w, "Device not found", http.StatusNotFound)
+
+}
+
+func (se *ShellyExporter) Devices(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		se.DeviceList(w, r)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		se.AddDeviceHandler(w, r)
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
 }
 
 func (se *ShellyExporter) HealthCheck(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +193,8 @@ func (se *ShellyExporter) Serve() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", se.GetObservations)
 	mux.HandleFunc("/health", se.HealthCheck)
-
+	mux.HandleFunc("/devices", se.Devices)
+	mux.HandleFunc("/devices/{instance}", se.UpdateDevice)
 	se.srv = &http.Server{
 		Addr:              se.MetricsEndpoint,
 		Handler:           mux,

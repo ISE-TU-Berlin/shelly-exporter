@@ -39,6 +39,7 @@ func (ds *DeviceSet) getAll() []Device {
 
 type PowerStateResponse struct {
 	Instance  string    `json:"instance"`
+	Name      string    `json:"name"`
 	Timestamp time.Time `json:"timestamp"`
 	APower    float64   `json:"apower"`
 	Voltage   float64   `json:"voltage"`
