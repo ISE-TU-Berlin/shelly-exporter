@@ -75,12 +75,17 @@ func (se *ShellyExporter) tick() {
 			powerState, err := se.getPowerState(device)
 			powerState.Instance = device.Instance
 			powerState.Name = device.Name
-			se.observationMutex.Lock()
-			se.observations[device.Instance] = &powerState
-			se.observationMutex.Unlock()
+
 			if err != nil {
+				se.observationMutex.Lock()
+				se.observations[device.Instance] = nil
+				se.observationMutex.Unlock()
 				log.Errorf("Error getting power state for device %s: %v", device.Instance, err)
 				continue
+			} else {
+				se.observationMutex.Lock()
+				se.observations[device.Instance] = &powerState
+				se.observationMutex.Unlock()
 			}
 			log.Debugf("Device %s power state: %+v", device.Instance, powerState)
 		}
@@ -96,6 +101,9 @@ func (se *ShellyExporter) GetObservations(w http.ResponseWriter, r *http.Request
 	defer se.observationMutex.RUnlock()
 
 	for instance, obs := range se.observations {
+		if obs == nil {
+			continue
+		}
 		fmt.Fprintf(w, "shelly_apower_watts{instance=\"%s\",node=\"%s\"} %f\n", instance, obs.Name, obs.APower)
 		fmt.Fprintf(w, "shelly_voltage_volts{instance=\"%s\",node=\"%s\"} %f\n", instance, obs.Name, obs.Voltage)
 		fmt.Fprintf(w, "shelly_current_amps{instance=\"%s\",node=\"%s\"} %f\n", instance, obs.Name, obs.Current)
